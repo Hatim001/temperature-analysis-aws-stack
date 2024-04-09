@@ -1,0 +1,554 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+    "Resources": {
+      "ProcessedDataBucket": {
+        "Type": "AWS::S3::Bucket",
+        "DeletionPolicy": "Delete",
+        "Properties": {
+          "BucketName": "temperature-analysis-hatim-s3-bucket"
+        }
+      },
+      "TemperatureKinesisStream": {
+        "Type": "AWS::Kinesis::Stream",
+        "Properties": {
+          "Name": "TemperatureKinesisDataStream",
+          "ShardCount": 1
+        }
+      },
+      "TemperatureAnalysisVPC": {
+        "Type": "AWS::EC2::VPC",
+        "Properties": {
+          "CidrBlock": "10.0.0.0/16",
+          "EnableDnsSupport": "true",
+          "EnableDnsHostnames": "true"
+        }
+      },
+      "EC2Role": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "ec2.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          },
+          "ManagedPolicyArns": [
+            "arn:aws:iam::aws:policy/AmazonS3FullAccess",
+            "arn:aws:iam::aws:policy/AmazonKinesisFullAccess"
+          ]
+        }
+      },
+      "EC2SecurityGroup": {
+        "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+          "GroupName": "EC2SecurityGroup",
+          "GroupDescription": "Allow SSH access",
+          "VpcId": {
+            "Ref": "TemperatureAnalysisVPC"
+          },
+          "SecurityGroupIngress": [
+            {
+              "IpProtocol": "tcp",
+              "FromPort": 22,
+              "ToPort": 22,
+              "CidrIp": "0.0.0.0/0"
+            }
+          ]
+        }
+      },
+      "EC2Profile": {
+        "Type": "AWS::IAM::InstanceProfile",
+        "Properties": {
+          "Roles": [
+            {
+              "Ref": "EC2Role"
+            }
+          ]
+        }
+      },
+      "EC2Instance": {
+        "Type": "AWS::EC2::Instance",
+        "Properties": {
+          "InstanceType": "t2.micro",
+          "ImageId": "ami-0a699202e5027c10d",
+          "KeyName": "hatim1",
+          "IamInstanceProfile": {
+            "Ref": "EC2Profile"
+          },
+          "NetworkInterfaces": [
+            {
+              "AssociatePublicIpAddress": "true",
+              "DeviceIndex": "0",
+              "GroupSet": [
+                {
+                  "Ref": "EC2SecurityGroup"
+                }
+              ],
+              "SubnetId": {
+                "Ref": "SubnetPublic"
+              }
+            }
+          ],
+          "UserData": {
+            "Fn::Base64": {
+              "Fn::Join": [
+                "",
+                [
+                  "#!/bin/bash\n",
+                  "exec > /home/ec2-user/user-data.log 2>&1\n",
+                  "echo \"Starting user data script execution...\"\n",
+                  "yum update -y\n",
+                  "yum install -y python3\n",
+                  "pip3 install boto3 || echo 'boto3 is already installed.'\n",
+                  "while true; do\n",
+                  "  if aws s3 ls \"s3://temperature-stream-hatim-bucket/temperature_simulation.py\"; then\n",
+                  "    break\n",
+                  "  fi\n",
+                  "  sleep 10\n",
+                  "done\n",
+                  "aws s3 cp \"s3://temperature-stream-hatim-bucket/temperature_simulation.py\" /home/ec2-user/temperature_simulation.py\n",
+                  "chmod +x /home/ec2-user/temperature_simulation.py\n",
+                  "export S3_BUCKET=\"temperature-stream-hatim-bucket\"\n",
+                  "export S3_KEY=\"IOT-temp.csv\"\n",
+                  "export KINESIS_STREAM_NAME=\"TemperatureKinesisDataStream\"\n",
+                  "echo \"Running the Python script...\"\n",
+                  "python3 /home/ec2-user/temperature_simulation.py > /home/ec2-user/script.log 2>&1\n"
+                ]
+              ]
+            }
+          }
+        }
+      },
+      "SubnetPublic": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "VpcId": {
+            "Ref": "TemperatureAnalysisVPC"
+          },
+          "CidrBlock": "10.0.1.0/24",
+          "MapPublicIpOnLaunch": "true",
+          "AvailabilityZone": "us-east-1a"
+        }
+      },
+      "RDSSecurityGroup": {
+        "Type": "AWS::EC2::SecurityGroup",
+        "Properties": {
+          "GroupDescription": "Allow MySQL access to RDS instance",
+          "VpcId": {
+            "Ref": "TemperatureAnalysisVPC"
+          },
+          "SecurityGroupIngress": [
+            {
+              "CidrIp": "0.0.0.0/0",
+              "Description": "Allow MySQL access",
+              "FromPort": 3306,
+              "IpProtocol": "tcp",
+              "ToPort": 3306
+            }
+          ]
+        }
+      },
+      "SecondarySubnet": {
+        "Type": "AWS::EC2::Subnet",
+        "Properties": {
+          "AvailabilityZone": "us-east-1b",
+          "CidrBlock": "10.0.2.0/24",
+          "VpcId": {
+            "Ref": "TemperatureAnalysisVPC"
+          },
+          "MapPublicIpOnLaunch": true
+        }
+      },
+      "MyDBSubnetGroup": {
+        "Type": "AWS::RDS::DBSubnetGroup",
+        "Properties": {
+          "DBSubnetGroupDescription": "Subnet group for RDS instance across multiple AZs",
+          "SubnetIds": [
+            {
+              "Ref": "SubnetPublic"
+            },
+            {
+              "Ref": "SecondarySubnet"
+            }
+          ]
+        }
+      },
+      "InternetGateway": {
+        "Type": "AWS::EC2::InternetGateway"
+      },
+      "VPCGatewayAttachment": {
+        "Type": "AWS::EC2::VPCGatewayAttachment",
+        "Properties": {
+          "InternetGatewayId": {
+            "Ref": "InternetGateway"
+          },
+          "VpcId": {
+            "Ref": "TemperatureAnalysisVPC"
+          }
+        }
+      },
+      "PublicRouteTable": {
+        "Type": "AWS::EC2::RouteTable",
+        "Properties": {
+          "VpcId": {
+            "Ref": "TemperatureAnalysisVPC"
+          }
+        }
+      },
+      "PublicRoute": {
+        "Type": "AWS::EC2::Route",
+        "DependsOn": "VPCGatewayAttachment",
+        "Properties": {
+          "RouteTableId": {
+            "Ref": "PublicRouteTable"
+          },
+          "DestinationCidrBlock": "0.0.0.0/0",
+          "GatewayId": {
+            "Ref": "InternetGateway"
+          }
+        }
+      },
+      "SubnetRouteTableAssociation": {
+        "Type": "AWS::EC2::SubnetRouteTableAssociation",
+        "Properties": {
+          "SubnetId": {
+            "Ref": "SubnetPublic"
+          },
+          "RouteTableId": {
+            "Ref": "PublicRouteTable"
+          }
+        }
+      },
+      "TemperatureStreamDBInstance": {
+        "Type": "AWS::RDS::DBInstance",
+        "Properties": {
+          "DBInstanceClass": "db.t3.micro",
+          "Engine": "mysql",
+          "EngineVersion": "8.0.35",
+          "AllocatedStorage": "20",
+          "MaxAllocatedStorage": 100,
+          "DBName": "TemperatureStreamDB",
+          "MasterUsername": "admin",
+          "MasterUserPassword": "PasswordAdmin123",
+          "DBSubnetGroupName": {
+            "Ref": "MyDBSubnetGroup"
+          },
+          "VPCSecurityGroups": [
+            {
+              "Ref": "RDSSecurityGroup"
+            }
+          ],
+          "PubliclyAccessible": true
+        }
+      },
+      "TemperatureAnalysisSNSTopic": {
+        "Type": "AWS::SNS::Topic",
+        "Properties": {
+          "DisplayName": "Temperature Analysis SNS Topic",
+          "TopicName": "TemperatureAnalysisSNSTopic"
+        }
+      },
+      "TemperatureAnalysisSubscription": {
+        "Type": "AWS::SNS::Subscription",
+        "Properties": {
+          "TopicArn": {
+            "Ref": "TemperatureAnalysisSNSTopic"
+          },
+          "Protocol": "email",
+          "Endpoint": "hatimpatrawalaca@gmail.com"
+        }
+      },
+      "TemperatureStreamProcessorLambda": {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+          "FunctionName": "TemperatureStreamProcessor",
+          "Handler": "processor.lambda_handler",
+          "Role": {
+            "Fn::GetAtt": ["LambdaExecutionRole", "Arn"]
+          },
+          "Code": {
+            "S3Bucket": "temperature-stream-hatim-bucket",
+            "S3Key": "lambda/processor.zip"
+          },
+          "Runtime": "python3.9",
+          "Timeout": 300,
+          "MemorySize": 256,
+          "Environment": {
+            "Variables": {
+              "S3_BUCKET_NAME": "temperature-stream-hatim-bucket",
+              "DB_NAME": "TemperatureStreamDB",
+              "DB_USERNAME": "admin",
+              "DB_PASSWORD": "PasswordAdmin123",
+              "DB_PORT": "3306",
+              "DB_ENDPOINT": {
+                "Fn::GetAtt": ["TemperatureStreamDBInstance", "Endpoint.Address"]
+              },
+              "SNS_TOPIC_ARN": {
+                "Ref": "TemperatureAnalysisSNSTopic"
+              }
+            }
+          },
+          "Layers": [
+            "arn:aws:lambda:us-east-1:637423348103:layer:pymysql_layer:1"
+          ]
+        }
+      },
+      "LambdaExecutionRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "lambda.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          },
+          "ManagedPolicyArns": [
+            "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole",
+            "arn:aws:iam::aws:policy/AmazonS3FullAccess",
+            "arn:aws:iam::aws:policy/AmazonSNSFullAccess"
+          ]
+        }
+      },
+      "FirehoseRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "firehose.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          },
+          "Policies": [
+            {
+              "PolicyName": "FirehosePolicy",
+              "PolicyDocument": {
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": ["s3:*", "kinesis:*", "lambda:*"],
+                    "Resource": "*"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "TemperatureDataDeliveryStream": {
+        "Type": "AWS::KinesisFirehose::DeliveryStream",
+        "Properties": {
+          "DeliveryStreamType": "KinesisStreamAsSource",
+          "KinesisStreamSourceConfiguration": {
+            "KinesisStreamARN": {
+              "Fn::GetAtt": ["TemperatureKinesisStream", "Arn"]
+            },
+            "RoleARN": { "Fn::GetAtt": ["FirehoseRole", "Arn"] }
+          },
+          "ExtendedS3DestinationConfiguration": {
+            "BucketARN": { "Fn::GetAtt": ["ProcessedDataBucket", "Arn"] },
+            "RoleARN": { "Fn::GetAtt": ["FirehoseRole", "Arn"] },
+            "BufferingHints": {
+              "SizeInMBs": 64,
+              "IntervalInSeconds": 30
+            },
+            "CompressionFormat": "UNCOMPRESSED",
+            "Prefix": "sanitized-records/",
+            "ErrorOutputPrefix": "error-logs/",
+            "ProcessingConfiguration": {
+              "Enabled": "true",
+              "Processors": [
+                {
+                  "Type": "Lambda",
+                  "Parameters": [
+                    {
+                      "ParameterName": "LambdaArn",
+                      "ParameterValue": {
+                        "Fn::GetAtt": ["TemperatureStreamProcessorLambda", "Arn"]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      "LambdaInvokePermission": {
+        "Type": "AWS::Lambda::Permission",
+        "Properties": {
+          "Action": "lambda:InvokeFunction",
+          "FunctionName": { "Ref": "TemperatureStreamProcessorLambda" },
+          "Principal": "firehose.amazonaws.com",
+          "SourceArn": { "Fn::GetAtt": ["TemperatureDataDeliveryStream", "Arn"] }
+        }
+      },
+      "TemperatureStatisticsLambdaExecutionRole": {
+        "Type": "AWS::IAM::Role",
+        "Properties": {
+          "AssumeRolePolicyDocument": {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Effect": "Allow",
+                "Principal": {
+                  "Service": "lambda.amazonaws.com"
+                },
+                "Action": "sts:AssumeRole"
+              }
+            ]
+          },
+          "Policies": [
+            {
+              "PolicyName": "TemperatureStatisticsLambdaPolicy",
+              "PolicyDocument": {
+                "Statement": [
+                  {
+                    "Effect": "Allow",
+                    "Action": [
+                      "s3:PutObject",
+                      "s3:GetObject",
+                      "s3:ListBucket",
+                      "sns:Publish"
+                    ],
+                    "Resource": "*"
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "TemperatureStatisticsLambdaFunction": {
+        "Type": "AWS::Lambda::Function",
+        "Properties": {
+          "FunctionName": "TemperatureStatisticsLambdaFunction",
+          "Handler": "statistics.lambda_handler",
+          "Role": {
+            "Fn::GetAtt": ["TemperatureStatisticsLambdaExecutionRole", "Arn"]
+          },
+          "Code": {
+            "S3Bucket": "temperature-stream-hatim-bucket",
+            "S3Key": "lambda/statistics.zip"
+          },
+          "Runtime": "python3.9",
+          "Timeout": 300,
+          "MemorySize": 256,
+          "Environment": {
+            "Variables": {
+              "S3_BUCKET_NAME": "temperature-stream-hatim-bucket",
+              "DB_NAME": "TemperatureStreamDB",
+              "DB_USERNAME": "admin",
+              "DB_PASSWORD": "PasswordAdmin123",
+              "DB_PORT": "3306",
+              "DB_ENDPOINT": {
+                "Fn::GetAtt": ["TemperatureStreamDBInstance", "Endpoint.Address"]
+              },
+              "SNS_TOPIC_ARN": {
+                "Ref": "TemperatureAnalysisSNSTopic"
+              }
+            }
+          },
+          "Layers": [
+            "arn:aws:lambda:us-east-1:637423348103:layer:pymysql_layer:1"
+          ]
+        }
+      },
+      "TemperatureStatisticsAPI": {
+        "Type": "AWS::ApiGateway::RestApi",
+        "Properties": {
+          "Name": "TemperatureStatisticsAPI",
+          "Description": "API Gateway for invoking the Temperature Statistics Lambda function."
+        }
+      },
+      "TemperatureStatisticsAPIResource": {
+        "Type": "AWS::ApiGateway::Resource",
+        "Properties": {
+          "ParentId": {
+            "Fn::GetAtt": ["TemperatureStatisticsAPI", "RootResourceId"]
+          },
+          "PathPart": "statistics",
+          "RestApiId": { "Ref": "TemperatureStatisticsAPI" }
+        }
+      },
+      "TemperatureStatisticsAPIMethod": {
+        "Type": "AWS::ApiGateway::Method",
+        "Properties": {
+          "RestApiId": { "Ref": "TemperatureStatisticsAPI" },
+          "ResourceId": { "Ref": "TemperatureStatisticsAPIResource" },
+          "HttpMethod": "GET",
+          "AuthorizationType": "NONE",
+          "Integration": {
+            "Type": "AWS_PROXY",
+            "IntegrationHttpMethod": "POST",
+            "Uri": {
+              "Fn::Sub": "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${TemperatureStatisticsLambdaFunction.Arn}/invocations"
+            }
+          }
+        }
+      },
+      "TemperatureStatisticsDeployment": {
+        "Type": "AWS::ApiGateway::Deployment",
+        "DependsOn": ["TemperatureStatisticsAPIMethod"],
+        "Properties": {
+          "RestApiId": { "Ref": "TemperatureStatisticsAPI" },
+          "StageName": "prod"
+        }
+      },
+      "TemperatureStatisticsLambdaInvokePermission": {
+        "Type": "AWS::Lambda::Permission",
+        "Properties": {
+          "Action": "lambda:InvokeFunction",
+          "FunctionName": {"Ref": "TemperatureStatisticsLambdaFunction"},
+          "Principal": "apigateway.amazonaws.com",
+          "SourceArn": {
+            "Fn::Sub": "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${TemperatureStatisticsAPI}/*/GET/statistics"
+          }
+        }
+      }
+    },
+    "Outputs": {
+      "TemperatureAnalysisBucketName": {
+        "Value": {
+          "Ref": "ProcessedDataBucket"
+        },
+        "Description": "The name of the S3 bucket for storing data and scripts."
+      },
+      "TemperatureKinesisStreamName": {
+        "Value": {
+          "Ref": "TemperatureKinesisStream"
+        },
+        "Description": "The name of the Kinesis data stream."
+      },
+      "TemperatureAnalysisSNSTopicARN": {
+        "Description": "The ARN of the SNS topic for Temperature Anomalies.",
+        "Value": {
+          "Ref": "TemperatureAnalysisSNSTopic"
+        }
+      },
+      "APIEndpoint": {
+        "Description": "The URL of the API Gateway endpoint for getting temperature statistics",
+        "Value": {
+          "Fn::Sub": "https://${TemperatureStatisticsAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/statistics"
+        }
+      }
+    }
+  }
+  
