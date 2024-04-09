@@ -96,7 +96,7 @@ def detect_anomaly(payload):
     # detect anomalies in temperature and send to sns
     if "temperature" in payload:
         temperature = payload["temperature"]
-        if int(temperature) > 38:
+        if int(temperature) > 36:
             sns.publish(
                 TopicArn=sns_topic_arn,
                 Message=f"Alert: Temperature in room {payload['room']} is {temperature} degrees Celsius.",

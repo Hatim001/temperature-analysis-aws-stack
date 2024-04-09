@@ -35,7 +35,7 @@ def lambda_handler(event, context):
         outside_avg_temperature = cursor.fetchone()[0]
 
         cursor.execute(
-            "SELECT COUNT(*) FROM temperature_log WHERE CAST(temperature AS FLOAT) > 41"
+            "SELECT COUNT(*) FROM temperature_log WHERE CAST(temperature AS FLOAT) > 36"
         )
         anomaly_count = cursor.fetchone()[0]
 
